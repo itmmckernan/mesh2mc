@@ -1,47 +1,159 @@
-import trimesh
+"""
+Glooey widget example. Only runs with python>=3.6 (because of Glooey).
+"""
+
+import io
+import pathlib
+
+import glooey
 import numpy as np
 
-# Load the rooster mesh. Trimesh directly detects that the mesh is textured and contains a material
-mesh_path = 'Duck.glb'
-mesh = trimesh.load(mesh_path).geometry['LOD3spShape']
+import pyglet
+import trimesh
+import trimesh.viewer
+import trimesh.transformations as tf
+import PIL.Image
 
-# Voxelize the loaded mesh with a voxel size of 0.01. We also call hollow() to remove the inside voxels, which will help with color calculation
-angel_voxel = mesh.voxelized(15).hollow()
 
-# Transform the texture information to color information, mapping it to each vertex. Transform it to a numpy array
-only_colors = mesh.visual.to_color().vertex_colors
-only_colors = np.asarray(only_colors)
-# If we want to add the color information to the mesh uncomment this part
-# mesh.visual = mesh.visual.to_color()
+here = pathlib.Path(__file__).resolve().parent
 
-# Extract the mesh vertices
-mesh_verts = mesh.vertices
 
-# We use the ProximityQuery built-in function to get the closest voxel point centers to each vertex of the mesh
-_,vert_idx = trimesh.proximity.ProximityQuery(mesh).vertex(angel_voxel.points)
+def create_scene():
+    """
+    Create a scene with a Fuze bottle, some cubes, and an axis.
+    Returns
+    ----------
+    scene : trimesh.Scene
+      Object with geometry
+    """
+    scene = trimesh.Scene()
 
-# We initialize a array of zeros of size X,Y,Z,4 to contain the colors for each voxel of the voxelized mesh in the grid
-cube_color=np.zeros([angel_voxel.shape[0],angel_voxel.shape[1],angel_voxel.shape[2],4])
+    # plane
+    geom = trimesh.creation.box((0.5, 0.5, 0.01))
+    geom.apply_translation((0, 0, -0.005))
+    geom.visual.face_colors = (.6, .6, .6)
+    scene.add_geometry(geom)
 
-# We loop through all the calculated closest voxel points
-test = []
-for idx, vert in enumerate(vert_idx):
-    # Get the voxel grid index of each closets voxel center point
-    vox_verts = angel_voxel.points_to_indices(mesh_verts[vert])
-    test += [vox_verts]
-    # Get the color vertex color
-    curr_color = only_colors[vert]
-    # Set the alpha channel of the color
-    curr_color[3] = 255
-    # add the color to the specific voxel grid index 
-    cube_color[vox_verts[0],vox_verts[1], vox_verts[2],:] = curr_color
+    # axis
+    geom = trimesh.creation.axis(0.02)
+    scene.add_geometry(geom)
 
-# generate a voxelized mesh from the voxel grid representation, using the calculated colors 
-voxelized_mesh = angel_voxel.as_boxes(colors=cube_color)
+    box_size = 0.1
 
-# Initialize a scene
-s = trimesh.Scene()
-# Add the voxelized mesh to the scene. If want to also show the intial mesh uncomment the second line and change the alpha channel of in the loop to something <100
-s.add_geometry(voxelized_mesh)
-s.add_geometry(mesh)
-s.show()
+    # box1
+    geom = trimesh.creation.box((box_size,) * 3)
+    geom.visual.face_colors = np.random.uniform(
+        0, 1, (len(geom.faces), 3))
+    transform = tf.translation_matrix([0.1, 0.1, box_size / 2])
+    scene.add_geometry(geom, transform=transform)
+
+    # box2
+    geom = trimesh.creation.box((box_size,) * 3)
+    geom.visual.face_colors = np.random.uniform(
+        0, 1, (len(geom.faces), 3))
+    transform = tf.translation_matrix([-0.1, 0.1, box_size / 2])
+    scene.add_geometry(geom, transform=transform)
+
+    # fuze
+    geom = trimesh.load(str(here / './fuze.obj'))
+    transform = tf.translation_matrix([-0.1, -0.1, 0])
+    scene.add_geometry(geom, transform=transform)
+
+    # sphere
+    geom = trimesh.creation.icosphere(radius=0.05)
+    geom.visual.face_colors = np.random.uniform(
+        0, 1, (len(geom.faces), 3))
+    transform = tf.translation_matrix([0.1, -0.1, box_size / 2])
+    scene.add_geometry(geom, transform=transform)
+
+    return scene
+
+
+class Application:
+
+    """
+    Example application that includes moving camera, scene and image update.
+    """
+
+    def __init__(self):
+        # create window with padding
+        self.width, self.height = 480 * 3, 360
+        window = self._create_window(width=self.width, height=self.height)
+
+        gui = glooey.Gui(window)
+
+        hbox = glooey.HBox()
+        hbox.set_padding(5)
+
+        # scene widget for changing camera location
+        scene = create_scene()
+        scene.camera_transform.setflags(write=1)
+        self.scene_widget1 = trimesh.viewer.SceneWidget(scene)
+        self.scene_widget1._angles = [np.deg2rad(45), 0, 0]
+        hbox.add(self.scene_widget1)
+
+        # scene widget for changing scene
+        scene = trimesh.Scene()
+        geom = trimesh.path.creation.box_outline((0.6, 0.6, 0.6))
+        scene.add_geometry(geom)
+        self.scene_widget2 = trimesh.viewer.SceneWidget(scene)
+        hbox.add(self.scene_widget2)
+
+        # integrate with other widget than SceneWidget
+        self.image_widget = glooey.Image()
+        hbox.add(self.image_widget)
+
+        gui.add(hbox)
+
+        pyglet.clock.schedule_interval(self.callback, 1. / 20)
+        pyglet.app.run()
+
+    def callback(self, dt):
+        # change camera location
+        self.scene_widget1._angles[2] += np.deg2rad(1)
+        self.scene_widget1.scene.set_camera(self.scene_widget1._angles)
+
+        # change scene
+        if len(self.scene_widget2.scene.graph.nodes) < 100:
+            geom = trimesh.creation.icosphere(radius=0.01)
+            geom.visual.face_colors = np.random.uniform(0, 1, (3,))
+            geom.apply_translation(np.random.uniform(-0.3, 0.3, (3,)))
+            self.scene_widget2.scene.add_geometry(geom)
+            self.scene_widget2._draw()
+
+        # change image
+        image = np.random.randint(0,
+                                  255,
+                                  (self.height - 10, self.width // 3 - 10, 3),
+                                  dtype=np.uint8)
+        with io.BytesIO() as f:
+            PIL.Image.fromarray(image).save(f, format='JPEG')
+            self.image_widget.image = pyglet.image.load(filename=None, file=f)
+
+    def _create_window(self, width, height):
+        try:
+            config = pyglet.gl.Config(sample_buffers=1,
+                                      samples=4,
+                                      depth_size=24,
+                                      double_buffer=True)
+            window = pyglet.window.Window(config=config,
+                                          width=width,
+                                          height=height)
+        except pyglet.window.NoSuchConfigException:
+            config = pyglet.gl.Config(double_buffer=True)
+            window = pyglet.window.Window(config=config,
+                                          width=width,
+                                          height=height)
+
+        @window.event
+        def on_key_press(symbol, modifiers):
+            if modifiers == 0:
+                if symbol == pyglet.window.key.Q:
+                    window.close()
+
+        return window
+
+
+if __name__ == '__main__':
+    np.random.seed(0)
+    Application()
